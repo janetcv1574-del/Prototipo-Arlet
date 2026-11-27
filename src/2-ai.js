@@ -149,7 +149,14 @@ function sanitizeDraft(o){
   return { ...f, question:q, conf };
 }
 const dateCtx = () => { const td = today(); return `Hoy es ${DOWL[fromIso(td).getDay()]} ${td} (formato AAAA-MM-DD), zona horaria ${tz()}.`; };
-const DRAFT_SPEC = `- "tipo": "tarea" | "reunion" | "evento" | "recordatorio" | "nota" | "checkin". Reunión = encuentro con otras personas; evento = actividad con hora (clase, cumpleaños, taller); recordatorio = algo que pide "recordar"; nota = un apunte o idea sin acción concreta; checkin = la usuaria cuenta que ya cumplió hoy un hábito de una de sus metas (ej. "hoy fui al gym").
+const DRAFT_SPEC = `- "tipo": elige con estas reglas, en este orden:
+  · "tarea": una ACCIÓN que ella tiene que hacer (entregar, enviar, comprar, llamar, pagar, estudiar, terminar, preparar, revisar…), aunque tenga fecha u hora. Va a Tareas. Ej.: "entregar el informe el viernes a las 5 p. m." = tarea con fecha y hora. "Llamar al banco mañana" = tarea. "Estudiar para el examen" = tarea.
+  · "reunion": un ENCUENTRO con otras personas en un momento: reunión, cita, junta, almuerzo o llamada CON alguien. Va a Agenda. Ej.: "almuerzo con Ana el sábado", "reunión con el equipo el jueves a las 10".
+  · "evento": algo que OCURRE en un momento y a lo que ella asiste, sin ser una acción que deba completar: clase, examen (el día del examen), cumpleaños, concierto, taller, vuelo, partido, cita médica. Va a Agenda.
+  · "recordatorio": cuando pide expresamente "recordar" o "recuérdame" algo.
+  · "nota": una idea, apunte o reflexión sin acción concreta.
+  · "checkin": cuenta que YA cumplió hoy un hábito de una de sus metas (ej. "hoy fui al gym").
+  Si dudas entre tarea y evento, elige "tarea".
 - "titulo": breve y claro, mayúscula inicial, sin fecha ni hora, máximo 60 caracteres. Reuniones: "Reunión con …" o "Reunión de …".
 - "descripcion": detalle útil (propósito, contexto) o "".
 - "fecha": "AAAA-MM-DD" o null. Resuelve fechas relativas desde hoy ("mañana", "pasado mañana", "la próxima semana" = lunes siguiente). Un día de la semana es su próxima ocurrencia después de hoy.
@@ -173,6 +180,16 @@ Texto de la usuaria: """${text}"""`;
   if (s) return applyPatterns({ ...s, source:"ia" }, text);
   const l = localParse(text);
   return applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, text);
+}
+/* Control propio: si la IA marca como evento o reunión algo que empieza con una acción, es una tarea. */
+const VERBO_ACCION = /^(tengo que |debo |necesito |hay que |me toca |falta )?(entregar|enviar|mandar|comprar|llamar|pagar|estudiar|terminar|hacer|revisar|preparar|escribir|leer|recoger|limpiar|lavar|ordenar|imprimir|subir|avanzar|corregir|responder|contestar|renovar|reservar|sacar|tramitar|cancelar|buscar|averiguar|cocinar|organizar|actualizar|redactar|practicar|repasar|completar|presentar|resolver|arreglar|devolver|agendar|confirmar|coordinar|investigar|descargar|instalar|inscribir|matricular|depositar|transferir|cobrar|vender|regalar)\b/;
+function corregirTipo(out){
+  const d = out.draft;
+  if ((d.tipo === "evento" || d.tipo === "reunion") && VERBO_ACCION.test(norm(d.titulo).trim()) && !/\b(con|reunion|cita|junta|almuerzo|cena)\b/.test(norm(d.titulo))) {
+    d.tipo = "tarea";
+    const f = finishDraft(d); out.missing = f.missing; out.question = f.missing.length ? askFor(d, f.missing) : null;
+  }
+  return out;
 }
 /* patrones aprendidos y confirmados se aplican siempre */
 function applyPatterns(out, text){
@@ -235,20 +252,25 @@ No incluyas datos de salud, sexualidad, religión, política ni finanzas persona
 }
 
 /* ---------- suelta tu mente ---------- */
-async function interpretDump(text, ia = true){
-  const prompt = `Eres Arlet. ${dateCtx()}
+/* Una sola captura para una cosa o veinte: la IA separa cada pendiente, reunión, evento o nota. */
+const SPLIT_RE = /\n+|(?<=[.;!?])\s+|,\s*(?:y\s+|además\s+|tambien\s+|también\s+)?(?=(?:tengo|debo|necesito|hay que|me toca|el |la |los |las |este |esta |mañana|hoy|pasado|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|comprar|llamar|pagar|enviar|mandar|ir |hacer|reuni|recordar|recuérdame|entregar|estudiar|terminar|preparar|nota))|\s+y\s+(?:además\s+|también\s+)?(?=(?:tengo que|debo|necesito|hay que|me toca|comprar|llamar|pagar|enviar|mandar|entregar|estudiar|terminar|preparar|recordar|reuni))/i;
+function splitLocal(text){ return text.split(SPLIT_RE).map(s => (s || "").trim().replace(/^(y|además|también)\s+/i, "")).filter(s => s.length > 3).slice(0, 15); }
+async function interpretAll(text, ia = true){
+  const prompt = `Eres Arlet, la mano derecha de una persona joven en Perú que organiza trabajo, estudios y vida personal. ${dateCtx()}
 Lo que sabes de ella:
 ${memorySummary()}
-La usuaria soltó todo lo que tiene en la cabeza. Sepáralo en registros independientes. Responde SOLO con un arreglo JSON (máx. 15) de objetos con estas claves:
+${recentCorrections() ? "Correcciones recientes que hizo a tus propuestas (aprende de ellas):\n" + recentCorrections() + "\n" : ""}El texto puede traer UNA cosa o VARIAS mezcladas. Separa cada pendiente, reunión, evento, recordatorio o nota en un elemento distinto. Si dos frases hablan de lo mismo, júntalas en un solo elemento. No inventes nada que no esté en el texto.
+Responde SOLO con un objeto JSON {"items": [ ... ]} (máximo 15 elementos). Cada elemento tiene estas claves:
 ${DRAFT_SPEC}
-No inventes pendientes que no estén en el texto. Texto: """${text}"""`;
+Texto de la usuaria: """${text}"""`;
   const out = ia ? await aiJSON(prompt, "default") : null;
-  if (Array.isArray(out)) {
-    const items = out.map(sanitizeDraft).filter(Boolean).map(x => applyPatterns({ ...x, source:"ia" }, x.draft.titulo));
+  const arr = out && Array.isArray(out.items) ? out.items : Array.isArray(out) ? out : out && out.tipo ? [out] : null;
+  if (arr) {
+    const items = arr.map(sanitizeDraft).filter(Boolean).map(x => corregirTipo(applyPatterns({ ...x, source:"ia" }, x.draft.titulo)));
     if (items.length) return items;
   }
-  return text.split(/\n+|(?<=[.;])\s+|,\s*(?:y\s+)?(?=(?:tengo|debo|necesito|hay|comprar|llamar|pagar|enviar|ir|hacer|reuni|recordar|entregar|estudiar))/i)
-    .map(s => s.trim()).filter(s => s.length > 3).slice(0, 15).map(s => { const l = localParse(s); return applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s); });
+  const partes = splitLocal(text);
+  return (partes.length ? partes : [text]).map(s => { const l = localParse(s); return corregirTipo(applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s)); });
 }
 
 /* ---------- diario: cuidado primero ---------- */

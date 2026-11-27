@@ -1286,7 +1286,14 @@ function sanitizeDraft(o){
   return { ...f, question:q, conf };
 }
 const dateCtx = () => { const td = today(); return `Hoy es ${DOWL[fromIso(td).getDay()]} ${td} (formato AAAA-MM-DD), zona horaria ${tz()}.`; };
-const DRAFT_SPEC = `- "tipo": "tarea" | "reunion" | "evento" | "recordatorio" | "nota" | "checkin". Reunión = encuentro con otras personas; evento = actividad con hora (clase, cumpleaños, taller); recordatorio = algo que pide "recordar"; nota = un apunte o idea sin acción concreta; checkin = la usuaria cuenta que ya cumplió hoy un hábito de una de sus metas (ej. "hoy fui al gym").
+const DRAFT_SPEC = `- "tipo": elige con estas reglas, en este orden:
+  · "tarea": una ACCIÓN que ella tiene que hacer (entregar, enviar, comprar, llamar, pagar, estudiar, terminar, preparar, revisar…), aunque tenga fecha u hora. Va a Tareas. Ej.: "entregar el informe el viernes a las 5 p. m." = tarea con fecha y hora. "Llamar al banco mañana" = tarea. "Estudiar para el examen" = tarea.
+  · "reunion": un ENCUENTRO con otras personas en un momento: reunión, cita, junta, almuerzo o llamada CON alguien. Va a Agenda. Ej.: "almuerzo con Ana el sábado", "reunión con el equipo el jueves a las 10".
+  · "evento": algo que OCURRE en un momento y a lo que ella asiste, sin ser una acción que deba completar: clase, examen (el día del examen), cumpleaños, concierto, taller, vuelo, partido, cita médica. Va a Agenda.
+  · "recordatorio": cuando pide expresamente "recordar" o "recuérdame" algo.
+  · "nota": una idea, apunte o reflexión sin acción concreta.
+  · "checkin": cuenta que YA cumplió hoy un hábito de una de sus metas (ej. "hoy fui al gym").
+  Si dudas entre tarea y evento, elige "tarea".
 - "titulo": breve y claro, mayúscula inicial, sin fecha ni hora, máximo 60 caracteres. Reuniones: "Reunión con …" o "Reunión de …".
 - "descripcion": detalle útil (propósito, contexto) o "".
 - "fecha": "AAAA-MM-DD" o null. Resuelve fechas relativas desde hoy ("mañana", "pasado mañana", "la próxima semana" = lunes siguiente). Un día de la semana es su próxima ocurrencia después de hoy.
@@ -1310,6 +1317,16 @@ Texto de la usuaria: """${text}"""`;
   if (s) return applyPatterns({ ...s, source:"ia" }, text);
   const l = localParse(text);
   return applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, text);
+}
+/* Control propio: si la IA marca como evento o reunión algo que empieza con una acción, es una tarea. */
+const VERBO_ACCION = /^(tengo que |debo |necesito |hay que |me toca |falta )?(entregar|enviar|mandar|comprar|llamar|pagar|estudiar|terminar|hacer|revisar|preparar|escribir|leer|recoger|limpiar|lavar|ordenar|imprimir|subir|avanzar|corregir|responder|contestar|renovar|reservar|sacar|tramitar|cancelar|buscar|averiguar|cocinar|organizar|actualizar|redactar|practicar|repasar|completar|presentar|resolver|arreglar|devolver|agendar|confirmar|coordinar|investigar|descargar|instalar|inscribir|matricular|depositar|transferir|cobrar|vender|regalar)\b/;
+function corregirTipo(out){
+  const d = out.draft;
+  if ((d.tipo === "evento" || d.tipo === "reunion") && VERBO_ACCION.test(norm(d.titulo).trim()) && !/\b(con|reunion|cita|junta|almuerzo|cena)\b/.test(norm(d.titulo))) {
+    d.tipo = "tarea";
+    const f = finishDraft(d); out.missing = f.missing; out.question = f.missing.length ? askFor(d, f.missing) : null;
+  }
+  return out;
 }
 /* patrones aprendidos y confirmados se aplican siempre */
 function applyPatterns(out, text){
@@ -1372,20 +1389,25 @@ No incluyas datos de salud, sexualidad, religión, política ni finanzas persona
 }
 
 /* ---------- suelta tu mente ---------- */
-async function interpretDump(text, ia = true){
-  const prompt = `Eres Arlet. ${dateCtx()}
+/* Una sola captura para una cosa o veinte: la IA separa cada pendiente, reunión, evento o nota. */
+const SPLIT_RE = /\n+|(?<=[.;!?])\s+|,\s*(?:y\s+|además\s+|tambien\s+|también\s+)?(?=(?:tengo|debo|necesito|hay que|me toca|el |la |los |las |este |esta |mañana|hoy|pasado|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|comprar|llamar|pagar|enviar|mandar|ir |hacer|reuni|recordar|recuérdame|entregar|estudiar|terminar|preparar|nota))|\s+y\s+(?:además\s+|también\s+)?(?=(?:tengo que|debo|necesito|hay que|me toca|comprar|llamar|pagar|enviar|mandar|entregar|estudiar|terminar|preparar|recordar|reuni))/i;
+function splitLocal(text){ return text.split(SPLIT_RE).map(s => (s || "").trim().replace(/^(y|además|también)\s+/i, "")).filter(s => s.length > 3).slice(0, 15); }
+async function interpretAll(text, ia = true){
+  const prompt = `Eres Arlet, la mano derecha de una persona joven en Perú que organiza trabajo, estudios y vida personal. ${dateCtx()}
 Lo que sabes de ella:
 ${memorySummary()}
-La usuaria soltó todo lo que tiene en la cabeza. Sepáralo en registros independientes. Responde SOLO con un arreglo JSON (máx. 15) de objetos con estas claves:
+${recentCorrections() ? "Correcciones recientes que hizo a tus propuestas (aprende de ellas):\n" + recentCorrections() + "\n" : ""}El texto puede traer UNA cosa o VARIAS mezcladas. Separa cada pendiente, reunión, evento, recordatorio o nota en un elemento distinto. Si dos frases hablan de lo mismo, júntalas en un solo elemento. No inventes nada que no esté en el texto.
+Responde SOLO con un objeto JSON {"items": [ ... ]} (máximo 15 elementos). Cada elemento tiene estas claves:
 ${DRAFT_SPEC}
-No inventes pendientes que no estén en el texto. Texto: """${text}"""`;
+Texto de la usuaria: """${text}"""`;
   const out = ia ? await aiJSON(prompt, "default") : null;
-  if (Array.isArray(out)) {
-    const items = out.map(sanitizeDraft).filter(Boolean).map(x => applyPatterns({ ...x, source:"ia" }, x.draft.titulo));
+  const arr = out && Array.isArray(out.items) ? out.items : Array.isArray(out) ? out : out && out.tipo ? [out] : null;
+  if (arr) {
+    const items = arr.map(sanitizeDraft).filter(Boolean).map(x => corregirTipo(applyPatterns({ ...x, source:"ia" }, x.draft.titulo)));
     if (items.length) return items;
   }
-  return text.split(/\n+|(?<=[.;])\s+|,\s*(?:y\s+)?(?=(?:tengo|debo|necesito|hay|comprar|llamar|pagar|enviar|ir|hacer|reuni|recordar|entregar|estudiar))/i)
-    .map(s => s.trim()).filter(s => s.length > 3).slice(0, 15).map(s => { const l = localParse(s); return applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s); });
+  const partes = splitLocal(text);
+  return (partes.length ? partes : [text]).map(s => { const l = localParse(s); return corregirTipo(applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s)); });
 }
 
 /* ---------- diario: cuidado primero ---------- */
@@ -2078,7 +2100,7 @@ function viewInicio(){
   <form class="capture-card" id="quick-form" novalidate style="margin-top:var(--space-6)">
     <label for="quick">¿Qué necesitas organizar?</label>
     <div class="capture-row">
-      <input class="input" id="quick" autocomplete="off" placeholder="Ej.: Reunión con el equipo el jueves a las 10 a. m." value="${esc(S.cap.phase === "idle" ? S.cap.text : "")}">
+      <input class="input" id="quick" autocomplete="off" placeholder="Una cosa o varias: entrego el informe el viernes y el jueves a las 10 tengo reunión con el equipo" value="${esc(S.cap.phase === "idle" ? S.cap.text : "")}">
       <button class="btn btn-primary" type="submit">${ic("plus")}Agregar</button>
     </div>
     <span class="help caption" id="quick-err" role="alert"></span>
@@ -2109,7 +2131,7 @@ function viewInicio(){
 }
 
 /* ================= capturar ================= */
-const CAP_EX = ["Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto","Entregar avance de tesis el viernes","Comprar comida para los gatos mañana","Recordar revisar el documento de la universidad","Nota: ideas para la presentación del cliente","Hoy fui al gym"];
+const CAP_EX = ["El viernes entrego el avance de tesis, tengo que llamar al banco y el martes a las 3 p. m. tengo reunión con el cliente","Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto","Entregar avance de tesis el viernes","Comprar comida para los gatos mañana","Recordar revisar el documento de la universidad","Nota: ideas para la presentación del cliente","Hoy fui al gym"];
 function confirmCardHTML(){
   const c = S.cap, d = c.draft;
   if (d.tipo === "checkin") {
@@ -2131,56 +2153,54 @@ function confirmCardHTML(){
       <div class="form-foot"><button type="button" class="btn btn-secondary" data-act="discard">Descartar</button>
         <button type="submit" class="btn btn-primary">${ic("check")}Confirmar y guardar</button></div></form></section>`;
 }
+const destino = r => r.tipo === "checkin" ? "Mi vida" : isEventLike(r) ? "Agenda" : r.tipo === "nota" ? "Notas" : "Tareas";
+function multiListHTML(){
+  const items = S.dump.items;
+  const n = items.length, pend = items.filter(x => x.sel && !x.saved).length;
+  const cnt = {}; items.forEach(x => { const k = destino(x.draft); cnt[k] = (cnt[k] || 0) + 1; });
+  return `<section class="card confirm" aria-labelledby="h-multi">
+    <div class="confirm-head"><div><h2 id="h-multi">Encontré ${n} cosas</h2><p class="caption">${esc(Object.entries(cnt).map(([k, v]) => `${v} para ${k}`).join(" · "))}. Revisa, desmarca lo que no quieras y guarda.</p></div>
+      <span class="ai-badge">${ic("capture","icon-16")}${items.some(x => x.source === "ia") ? "Interpretado con IA" : "Interpretación básica"}</span></div>
+    ${items.every(x => x.source !== "ia") ? `<div class="banner ${S.cap.limite ? "info" : "warn"}">${ic(S.cap.limite ? "info" : "alert")}<div>${S.cap.limite ? "Este mes ya usaste tus capturas con IA, así que separé tu texto con una lectura básica." : "La IA no está disponible ahora. Separé tu texto con una lectura básica."} Revisa cada cosa antes de guardar.</div></div>` : ""}
+    <div class="dump-list" role="list">${items.map((it, i) => {
+      const r = it.draft, saved = it.saved;
+      const meta = r.tipo === "checkin" ? `Cumplido hoy · ${esc(metaName(r.meta_id) || "")}` : `${TIPOS[r.tipo].n} · ${esc(areaName(r.area))}${r.fecha ? " · " + esc(fmtDate(r.fecha)) : ""}${r.hora ? " · " + fmtTime(r.hora) : ""}`;
+      return `<div class="dump-item a-${areaKey(r.area)} ${saved ? "saved" : ""}" role="listitem">
+        ${saved ? `<span style="color:var(--color-success)">${ic("check")}</span>` : `<input type="checkbox" id="dump-${i}" data-dump="${i}" ${it.sel ? "checked" : ""} aria-label="Elegir: ${esc(r.titulo)}">`}
+        <label class="row-main" for="dump-${i}"><span class="row-title">${esc(r.titulo)}</span><span class="row-meta"><span>${ic(r.tipo === "checkin" ? "target" : TIPOS[r.tipo].ic, "icon-16")}${meta}</span><span>${ic("arrow","icon-16")}${destino(r)}</span>${it.missing.length && r.tipo !== "checkin" ? `<span class="soon">${ic("info","icon-16")}${esc(askFor(r, it.missing) || "")}</span>` : ""}</span></label>
+        ${saved ? `<span class="caption">${esc(cap1(r.tipo === "checkin" ? "anotado" : guardad(r.tipo)))}</span>` : `<button class="btn btn-text" data-act="dump-edit" data-i="${i}">${ic("pencil","icon-16")}Revisar</button>`}
+      </div>`; }).join("")}</div>
+    <div class="form-foot"><button class="btn btn-secondary" data-act="dump-clear">Empezar de nuevo</button><button class="btn btn-primary" data-act="dump-save" ${pend ? "" : "disabled"}>${ic("check")}${pend ? `Guardar ${pend === n ? "todo" : plural(pend, "seleccionado", "seleccionados")}` : "Todo guardado"}</button></div>
+  </section>`;
+}
 function viewCapturar(){
-  const c = S.cap, busy = c.phase === "loading", confirm = c.phase === "confirm", tab = S.capTab;
-  const tabs = `<div class="tabs" role="tablist" aria-label="Formas de capturar">
-    <button class="tab" role="tab" data-captab="una" aria-selected="${tab === "una"}">${ic("capture","icon-16")}Una cosa</button>
-    <button class="tab" role="tab" data-captab="mente" aria-selected="${tab === "mente"}">${ic("pen","icon-16")}Suelta tu mente</button></div>`;
-  const head = `<div class="page-head"><div><h1>Capturar</h1><p>${tab === "una" ? "Escríbeme como lo dirías en voz alta. Detecto el tipo, la fecha, la hora y la prioridad, y te pregunto lo que falte." : "Escribe todo lo que tienes en la cabeza, sin orden. Yo lo separo en pendientes y tú eliges qué guardar."}</p></div></div>`;
-  if (tab === "mente") { const q2 = puede("captura_ia"); return head + tabs + (!q2.ok ? `<div class="banner info" style="margin-bottom:var(--space-5)">${ic("info")}<div><b>Este mes ya usaste tus ${q2.limite} capturas con IA.</b> Puedo separar tu texto con una lectura básica, o puedes pasarte a Plus. <a href="#precios">Ver Plus</a></div></div>` : "") + viewDump(); }
+  const c = S.cap, busy = c.phase === "loading", confirm = c.phase === "confirm", multi = c.phase === "multi";
+  const head = `<div class="page-head"><div><h1>Capturar</h1><p>Escríbeme como lo dirías en voz alta: una cosa o todo lo que tienes en la cabeza. Yo separo las tareas, reuniones, eventos y notas, detecto fechas y prioridades, y te pregunto lo que falte.</p></div></div>`;
   let card = "";
   if (busy) card = `<div class="card confirm" aria-live="polite"><div class="confirm-head"><h2>Leyendo lo que escribiste…</h2><span class="ai-badge">${ic("capture","icon-16")}IA</span></div>${loadingRows()}</div>`;
   if (confirm) card = confirmCardHTML();
+  if (multi) card = multiListHTML();
   const q = puede("captura_ia"), ef = planEf();
   const help = (nivel() === 1 ? "Nada se guarda hasta que confirmes." : nivel() === 2 ? "Si lo tengo muy claro, lo guardo y te aviso. Lo dudoso te lo pregunto." : "Guardo lo que tenga claro y te aviso. Lo que falta te lo pregunto.")
     + (!ef.plus && q.ok ? ` Te ${q.limite - q.usadas === 1 ? "queda 1 captura" : `quedan ${q.limite - q.usadas} capturas`} con IA este mes.` : "");
   const limitBanner = !q.ok ? `<div class="banner info" style="margin-bottom:var(--space-5)">${ic("info")}<div><b>Este mes ya usaste tus ${q.limite} capturas con IA.</b> Puedes seguir escribiendo a mano o pasarte a Plus. Si escribes aquí, hago una lectura básica y tú revisas. <a href="#precios">Ver Plus</a></div></div>` : "";
-  return `${head}${tabs}${limitBanner}
+  return `${head}${limitBanner}
   <div class="cap-grid">
     <div>
       <form class="card cap-input" id="cap-form" novalidate>
-        <div class="field"><label for="cap-text">¿Qué necesitas organizar?</label>
-          <textarea class="textarea" id="cap-text" placeholder="Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto" ${busy ? "disabled" : ""}>${esc(c.text)}</textarea>
+        <div class="field"><label for="cap-text">¿Qué tienes en la cabeza?</label>
+          <textarea class="textarea" id="cap-text" placeholder="El viernes entrego el avance de tesis. Tengo que llamar al banco y comprar comida para los gatos. El martes a las 3 p. m. tengo reunión con el cliente." ${busy ? "disabled" : ""}>${esc(c.text)}</textarea>
           <span class="help" id="cap-help">${help}</span></div>
-        <div class="cap-actions"><button type="submit" class="btn ${confirm ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""} style="min-width:148px">${busy ? `<span class="spinner"></span>Interpretando…` : `${ic("capture")}${confirm ? "Volver a interpretar" : "Interpretar"}`}</button></div>
+        <div class="cap-actions"><button type="submit" class="btn ${confirm || multi ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""} style="min-width:148px">${busy ? `<span class="spinner"></span>Ordenando…` : `${ic("capture")}${confirm || multi ? "Volver a ordenar" : "Ordenar"}`}</button></div>
       </form>
       ${card}
     </div>
     <aside class="card" aria-labelledby="h-ex"><h3 id="h-ex" style="margin-bottom:12px">Ejemplos</h3>
       <div class="examples">${CAP_EX.map(x => `<button type="button" data-ex="${esc(x)}">${ic("arrow","icon-16")}<span>${esc(x)}</span></button>`).join("")}</div>
-      <p class="caption" style="margin-top:16px">No reviso tu correo ni tus chats. ${nivel() === 1 ? "Y no guardo nada sin que lo confirmes." : "Puedes cambiar cuánto hago por mi cuenta en tu perfil."}</p>
+      <p class="caption" style="margin-top:16px"><b>Tareas</b> son acciones que haces tú. <b>Agenda</b> son reuniones y eventos que ocurren en un momento. Las tareas con fecha también aparecen en tu agenda como fecha límite.</p>
+      <p class="caption" style="margin-top:8px">No reviso tu correo ni tus chats. ${nivel() === 1 ? "Y no guardo nada sin que lo confirmes." : "Puedes cambiar cuánto hago por mi cuenta en tu perfil."}</p>
     </aside>
   </div>`;
-}
-function viewDump(){
-  const d = S.dump, busy = d.phase === "loading";
-  const items = d.items;
-  const list = items.length ? `<div class="dump-list" role="list">${items.map((it, i) => {
-    const r = it.draft, saved = it.saved;
-    const meta = r.tipo === "checkin" ? `Cumplido hoy · ${esc(metaName(r.meta_id) || "")}` : `${TIPOS[r.tipo].n} · ${esc(areaName(r.area))}${r.fecha ? " · " + esc(fmtDate(r.fecha)) : ""}${r.hora ? " · " + fmtTime(r.hora) : ""}`;
-    return `<div class="dump-item a-${areaKey(r.area)} ${saved ? "saved" : ""}" role="listitem">
-      ${saved ? `<span style="color:var(--color-success)">${ic("check")}</span>` : `<input type="checkbox" id="dump-${i}" data-dump="${i}" ${it.sel ? "checked" : ""} aria-label="Elegir: ${esc(r.titulo)}">`}
-      <label class="row-main" for="dump-${i}"><span class="row-title">${esc(r.titulo)}</span><span class="row-meta"><span>${meta}</span>${it.missing.length && r.tipo !== "checkin" ? `<span class="soon">${ic("info","icon-16")}${esc(askFor(r, it.missing) || "")}</span>` : ""}</span></label>
-      ${saved ? `<span class="caption">${esc(cap1(guardad(r.tipo)))}</span>` : `<button class="btn btn-text" data-act="dump-edit" data-i="${i}">${ic("pencil","icon-16")}Revisar</button>`}
-    </div>`; }).join("")}</div>
-    <div class="form-foot"><button class="btn btn-secondary" data-act="dump-clear">Empezar de nuevo</button><button class="btn btn-primary" data-act="dump-save" ${items.some(x => x.sel && !x.saved) ? "" : "disabled"}>${ic("check")}Guardar seleccionados</button></div>` : "";
-  return `<form class="card dump" id="dump-form" novalidate>
-    <div class="field"><label for="dump-text">¿Qué tienes en la cabeza?</label>
-      <textarea class="textarea" id="dump-text" placeholder="El viernes entrego el avance de tesis, tengo que llamar al banco, comprar comida para los gatos, la reunión con el cliente es el martes a las 3 p. m. y quiero ir al gym 3 veces…" ${busy ? "disabled" : ""}>${esc(d.text)}</textarea>
-      <span class="help">No se guarda nada hasta que elijas qué guardar.</span></div>
-    <div class="cap-actions"><button type="submit" class="btn ${items.length ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span>Ordenando…` : `${ic("capture")}${items.length ? "Volver a ordenar" : "Ordenar"}`}</button></div>
-    ${busy ? `<div style="margin-top:20px">${loadingRows()}</div>` : list}
-  </form>`;
 }
 
 /* ================= agenda ================= */
@@ -2827,12 +2847,17 @@ async function startCapture(text){
   text = text.trim(); if (!text) return;
   const from = S.view;
   S.cap = { text, raw:text, phase:"loading", draft:null, orig:null, source:null, question:null, missing:[], errors:{}, conf:0 };
-  S.capTab = "una";
   if (S.view !== "capturar") go("capturar"); else render();
   const q = puede("captura_ia");
-  const out = await interpret(text, q.ok);
+  const items = await interpretAll(text, q.ok);
   if (S.cap.raw !== text) return;
-  if (out.source === "ia") await contarCaptura();
+  if (items.some(x => x.source === "ia")) await contarCaptura();
+  if (items.length > 1) {
+    S.cap = { ...S.cap, phase:"multi", limite:!q.ok };
+    S.dump = { text, phase:"done", items:items.map(x => ({ ...x, sel:true, saved:false })) };
+    render(); $("#h-multi")?.scrollIntoView({ block:"start", behavior:"smooth" }); return;
+  }
+  const out = items[0];
   if (!mustAsk(out)) { resetCap(); await autoSave(out); if (from === "inicio") go("inicio"); else render(); return; }
   S.cap = { ...S.cap, limite:!q.ok, phase:"confirm", draft:out.draft, orig:{ ...out.draft }, source:out.source, conf:out.conf, question:out.question || askFor(out.draft, out.missing), missing:out.missing };
   render();
@@ -2868,14 +2893,6 @@ async function seedDemo(){
 }
 
 /* ================= suelta tu mente ================= */
-async function startDump(text){
-  text = text.trim(); if (!text) return;
-  S.dump = { text, phase:"loading", items:[] }; render();
-  const q = puede("captura_ia");
-  const items = await interpretDump(text, q.ok);
-  if (items.some(x => x.source === "ia")) await contarCaptura();
-  S.dump = { text, phase:"done", items:items.map(x => ({ ...x, sel:true, saved:false })) }; render();
-}
 async function saveDump(){
   const its = S.dump.items.filter(x => x.sel && !x.saved);
   let n = 0;
@@ -2886,6 +2903,7 @@ async function saveDump(){
     if (d.fecha && d.fecha < today()) d.fecha = null;
     if (await put(newId(), buildRecord({ ...d, origen:"captura", confianza_ia:it.conf, sin_cambios:true }))) { it.saved = true; it.sel = false; n++; }
   }
+  if (S.dump.items.every(x => x.saved || !x.sel)) S.cap.text = "";
   render();
   if (n) toast(say(`Listo, guardé ${plural(n, "cosa", "cosas")}. Vamos por partes.`, `${plural(n, "registro guardado", "registros guardados")}.`), "ok");
 }
@@ -2987,7 +3005,6 @@ document.addEventListener("click", async e => {
   const ex = t.closest("[data-ex]"); if (ex) { startCapture(ex.dataset.ex); return; }
   const day = t.closest("[data-day]"); if (day) { S.agenda.sel = day.dataset.day; const d = fromIso(S.agenda.sel); S.agenda.y = d.getFullYear(); S.agenda.m = d.getMonth(); render(); return; }
   const fc = t.closest("[data-estado]"); if (fc) { S.tasks.estado = fc.dataset.estado; render(); return; }
-  const tb = t.closest("[data-captab]"); if (tb) { S.capTab = tb.dataset.captab; render(); return; }
   const vt = t.closest("[data-vtab]"); if (vt) { S.vida.tab = vt.dataset.vtab; render(); return; }
   const at = t.closest("[data-atab]"); if (at) { S.admin.tab = at.dataset.atab; render(); return; }
   const md = t.closest("[data-mood]"); if (md) { S.diary.text = $("#dy-text")?.value || S.diary.text; S.diary.mood = S.diary.mood === md.dataset.mood ? null : md.dataset.mood; render(); return; }
@@ -3027,7 +3044,7 @@ document.addEventListener("click", async e => {
     case "level-no": await upd("perfil", { prop_nivel:today() }); toast(say("Perfecto, seguimos así. Tú decides cuándo.", "Seguimos igual."), "ok"); break;
     case "pat-yes": { if (!gate("memoria_aprende")) break; const p = pendingPattern(); if (p) { await put(newId("mem"), { k:"memoria", categoria:"patrones", contenido:p.contenido, regla:{ kw:p.kw, campo:p.campo, valor:p.valor }, fuente:"correccion", confirmado:true, creado:new Date().toISOString() }); toast(say("Listo, lo voy a recordar.", "Guardado."), "ok"); } break; }
     case "pat-no": { const p = pendingPattern(); if (p) await upd("perfil", { patrones_no:[...(P_().patrones_no || []), p.key] }); break; }
-    case "plan-week": await upd("perfil", { plan_semana:weekStart() }); S.capTab = "mente"; go("capturar"); break;
+    case "plan-week": await upd("perfil", { plan_semana:weekStart() }); go("capturar"); break;
     case "plan-no": await upd("perfil", { plan_semana:weekStart() }); break;
     case "ob-back": S.ob.step = Math.max(0, S.ob.step - 1); S.ob.props = null; render(); break;
     case "ob-skip": obNext(true); break;
@@ -3051,7 +3068,7 @@ document.addEventListener("click", async e => {
     case "demo-trial": await setPlan(PL.iniciarPrueba(null, today())); toast(`Empezó tu prueba de ${ARLET_CONFIG.prueba.dias} días.`, "ok"); break;
     case "st-send": stSend(); break;
     case "st-verify": stVerify(); break;
-    case "dump-clear": S.dump = { text:"", phase:"idle", items:[] }; render(); $("#dump-text")?.focus(); break;
+    case "dump-clear": S.dump = { text:"", phase:"idle", items:[] }; resetCap(); render(); $("#cap-text")?.focus(); break;
     case "dump-save": saveDump(); break;
     case "dump-edit": { const i = +b.dataset.i, it = S.dump.items[i]; if (it.draft.tipo === "checkin") { await doCheckin(it.draft.meta_id); it.saved = true; render(); } else openEditor({ ...it.draft, estado: isEventLike(it.draft) ? "confirmada" : "pendiente" }, true, { dumpIndex:i, origen:"captura" }); break; }
     case "dy-task": { if (!gate("diario_propuestas")) break; const tk = S.diary.reply.tareas[+b.dataset.i]; if (await put(newId(), buildRecord({ ...tk, origen:"diario" }))) { tk.done = true; render(); toast(say(`Listo, agregué «${tk.titulo}».`, "Agregado."), "ok"); } break; }
@@ -3082,7 +3099,6 @@ document.addEventListener("submit", e => {
   if (f.id === "conf-form") confirmCapture();
   if (f.id === "ed-form") saveEditor();
   if (f.id === "meta-form") saveMeta();
-  if (f.id === "dump-form") { const v = $("#dump-text").value.trim(); if (!v) { toast("Escribe lo que tienes en la cabeza y lo ordeno.", "err"); $("#dump-text").focus(); return; } startDump(v); }
   if (f.id === "diary-form") saveDiary();
   if (f.id === "ob-form") obNext(false);
   if (f.id === "acc-form") saveAccount();

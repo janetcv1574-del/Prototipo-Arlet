@@ -230,12 +230,17 @@ async function startCapture(text){
   text = text.trim(); if (!text) return;
   const from = S.view;
   S.cap = { text, raw:text, phase:"loading", draft:null, orig:null, source:null, question:null, missing:[], errors:{}, conf:0 };
-  S.capTab = "una";
   if (S.view !== "capturar") go("capturar"); else render();
   const q = puede("captura_ia");
-  const out = await interpret(text, q.ok);
+  const items = await interpretAll(text, q.ok);
   if (S.cap.raw !== text) return;
-  if (out.source === "ia") await contarCaptura();
+  if (items.some(x => x.source === "ia")) await contarCaptura();
+  if (items.length > 1) {
+    S.cap = { ...S.cap, phase:"multi", limite:!q.ok };
+    S.dump = { text, phase:"done", items:items.map(x => ({ ...x, sel:true, saved:false })) };
+    render(); $("#h-multi")?.scrollIntoView({ block:"start", behavior:"smooth" }); return;
+  }
+  const out = items[0];
   if (!mustAsk(out)) { resetCap(); await autoSave(out); if (from === "inicio") go("inicio"); else render(); return; }
   S.cap = { ...S.cap, limite:!q.ok, phase:"confirm", draft:out.draft, orig:{ ...out.draft }, source:out.source, conf:out.conf, question:out.question || askFor(out.draft, out.missing), missing:out.missing };
   render();
@@ -271,14 +276,6 @@ async function seedDemo(){
 }
 
 /* ================= suelta tu mente ================= */
-async function startDump(text){
-  text = text.trim(); if (!text) return;
-  S.dump = { text, phase:"loading", items:[] }; render();
-  const q = puede("captura_ia");
-  const items = await interpretDump(text, q.ok);
-  if (items.some(x => x.source === "ia")) await contarCaptura();
-  S.dump = { text, phase:"done", items:items.map(x => ({ ...x, sel:true, saved:false })) }; render();
-}
 async function saveDump(){
   const its = S.dump.items.filter(x => x.sel && !x.saved);
   let n = 0;
@@ -289,6 +286,7 @@ async function saveDump(){
     if (d.fecha && d.fecha < today()) d.fecha = null;
     if (await put(newId(), buildRecord({ ...d, origen:"captura", confianza_ia:it.conf, sin_cambios:true }))) { it.saved = true; it.sel = false; n++; }
   }
+  if (S.dump.items.every(x => x.saved || !x.sel)) S.cap.text = "";
   render();
   if (n) toast(say(`Listo, guardé ${plural(n, "cosa", "cosas")}. Vamos por partes.`, `${plural(n, "registro guardado", "registros guardados")}.`), "ok");
 }
@@ -390,7 +388,6 @@ document.addEventListener("click", async e => {
   const ex = t.closest("[data-ex]"); if (ex) { startCapture(ex.dataset.ex); return; }
   const day = t.closest("[data-day]"); if (day) { S.agenda.sel = day.dataset.day; const d = fromIso(S.agenda.sel); S.agenda.y = d.getFullYear(); S.agenda.m = d.getMonth(); render(); return; }
   const fc = t.closest("[data-estado]"); if (fc) { S.tasks.estado = fc.dataset.estado; render(); return; }
-  const tb = t.closest("[data-captab]"); if (tb) { S.capTab = tb.dataset.captab; render(); return; }
   const vt = t.closest("[data-vtab]"); if (vt) { S.vida.tab = vt.dataset.vtab; render(); return; }
   const at = t.closest("[data-atab]"); if (at) { S.admin.tab = at.dataset.atab; render(); return; }
   const md = t.closest("[data-mood]"); if (md) { S.diary.text = $("#dy-text")?.value || S.diary.text; S.diary.mood = S.diary.mood === md.dataset.mood ? null : md.dataset.mood; render(); return; }
@@ -430,7 +427,7 @@ document.addEventListener("click", async e => {
     case "level-no": await upd("perfil", { prop_nivel:today() }); toast(say("Perfecto, seguimos así. Tú decides cuándo.", "Seguimos igual."), "ok"); break;
     case "pat-yes": { if (!gate("memoria_aprende")) break; const p = pendingPattern(); if (p) { await put(newId("mem"), { k:"memoria", categoria:"patrones", contenido:p.contenido, regla:{ kw:p.kw, campo:p.campo, valor:p.valor }, fuente:"correccion", confirmado:true, creado:new Date().toISOString() }); toast(say("Listo, lo voy a recordar.", "Guardado."), "ok"); } break; }
     case "pat-no": { const p = pendingPattern(); if (p) await upd("perfil", { patrones_no:[...(P_().patrones_no || []), p.key] }); break; }
-    case "plan-week": await upd("perfil", { plan_semana:weekStart() }); S.capTab = "mente"; go("capturar"); break;
+    case "plan-week": await upd("perfil", { plan_semana:weekStart() }); go("capturar"); break;
     case "plan-no": await upd("perfil", { plan_semana:weekStart() }); break;
     case "ob-back": S.ob.step = Math.max(0, S.ob.step - 1); S.ob.props = null; render(); break;
     case "ob-skip": obNext(true); break;
@@ -454,7 +451,7 @@ document.addEventListener("click", async e => {
     case "demo-trial": await setPlan(PL.iniciarPrueba(null, today())); toast(`Empezó tu prueba de ${ARLET_CONFIG.prueba.dias} días.`, "ok"); break;
     case "st-send": stSend(); break;
     case "st-verify": stVerify(); break;
-    case "dump-clear": S.dump = { text:"", phase:"idle", items:[] }; render(); $("#dump-text")?.focus(); break;
+    case "dump-clear": S.dump = { text:"", phase:"idle", items:[] }; resetCap(); render(); $("#cap-text")?.focus(); break;
     case "dump-save": saveDump(); break;
     case "dump-edit": { const i = +b.dataset.i, it = S.dump.items[i]; if (it.draft.tipo === "checkin") { await doCheckin(it.draft.meta_id); it.saved = true; render(); } else openEditor({ ...it.draft, estado: isEventLike(it.draft) ? "confirmada" : "pendiente" }, true, { dumpIndex:i, origen:"captura" }); break; }
     case "dy-task": { if (!gate("diario_propuestas")) break; const tk = S.diary.reply.tareas[+b.dataset.i]; if (await put(newId(), buildRecord({ ...tk, origen:"diario" }))) { tk.done = true; render(); toast(say(`Listo, agregué «${tk.titulo}».`, "Agregado."), "ok"); } break; }
@@ -485,7 +482,6 @@ document.addEventListener("submit", e => {
   if (f.id === "conf-form") confirmCapture();
   if (f.id === "ed-form") saveEditor();
   if (f.id === "meta-form") saveMeta();
-  if (f.id === "dump-form") { const v = $("#dump-text").value.trim(); if (!v) { toast("Escribe lo que tienes en la cabeza y lo ordeno.", "err"); $("#dump-text").focus(); return; } startDump(v); }
   if (f.id === "diary-form") saveDiary();
   if (f.id === "ob-form") obNext(false);
   if (f.id === "acc-form") saveAccount();

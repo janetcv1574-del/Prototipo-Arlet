@@ -212,7 +212,7 @@ function viewInicio(){
   <form class="capture-card" id="quick-form" novalidate style="margin-top:var(--space-6)">
     <label for="quick">¿Qué necesitas organizar?</label>
     <div class="capture-row">
-      <input class="input" id="quick" autocomplete="off" placeholder="Ej.: Reunión con el equipo el jueves a las 10 a. m." value="${esc(S.cap.phase === "idle" ? S.cap.text : "")}">
+      <input class="input" id="quick" autocomplete="off" placeholder="Una cosa o varias: entrego el informe el viernes y el jueves a las 10 tengo reunión con el equipo" value="${esc(S.cap.phase === "idle" ? S.cap.text : "")}">
       <button class="btn btn-primary" type="submit">${ic("plus")}Agregar</button>
     </div>
     <span class="help caption" id="quick-err" role="alert"></span>

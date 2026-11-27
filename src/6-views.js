@@ -1,6 +1,6 @@
 
 /* ================= capturar ================= */
-const CAP_EX = ["Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto","Entregar avance de tesis el viernes","Comprar comida para los gatos mañana","Recordar revisar el documento de la universidad","Nota: ideas para la presentación del cliente","Hoy fui al gym"];
+const CAP_EX = ["El viernes entrego el avance de tesis, tengo que llamar al banco y el martes a las 3 p. m. tengo reunión con el cliente","Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto","Entregar avance de tesis el viernes","Comprar comida para los gatos mañana","Recordar revisar el documento de la universidad","Nota: ideas para la presentación del cliente","Hoy fui al gym"];
 function confirmCardHTML(){
   const c = S.cap, d = c.draft;
   if (d.tipo === "checkin") {
@@ -22,56 +22,54 @@ function confirmCardHTML(){
       <div class="form-foot"><button type="button" class="btn btn-secondary" data-act="discard">Descartar</button>
         <button type="submit" class="btn btn-primary">${ic("check")}Confirmar y guardar</button></div></form></section>`;
 }
+const destino = r => r.tipo === "checkin" ? "Mi vida" : isEventLike(r) ? "Agenda" : r.tipo === "nota" ? "Notas" : "Tareas";
+function multiListHTML(){
+  const items = S.dump.items;
+  const n = items.length, pend = items.filter(x => x.sel && !x.saved).length;
+  const cnt = {}; items.forEach(x => { const k = destino(x.draft); cnt[k] = (cnt[k] || 0) + 1; });
+  return `<section class="card confirm" aria-labelledby="h-multi">
+    <div class="confirm-head"><div><h2 id="h-multi">Encontré ${n} cosas</h2><p class="caption">${esc(Object.entries(cnt).map(([k, v]) => `${v} para ${k}`).join(" · "))}. Revisa, desmarca lo que no quieras y guarda.</p></div>
+      <span class="ai-badge">${ic("capture","icon-16")}${items.some(x => x.source === "ia") ? "Interpretado con IA" : "Interpretación básica"}</span></div>
+    ${items.every(x => x.source !== "ia") ? `<div class="banner ${S.cap.limite ? "info" : "warn"}">${ic(S.cap.limite ? "info" : "alert")}<div>${S.cap.limite ? "Este mes ya usaste tus capturas con IA, así que separé tu texto con una lectura básica." : "La IA no está disponible ahora. Separé tu texto con una lectura básica."} Revisa cada cosa antes de guardar.</div></div>` : ""}
+    <div class="dump-list" role="list">${items.map((it, i) => {
+      const r = it.draft, saved = it.saved;
+      const meta = r.tipo === "checkin" ? `Cumplido hoy · ${esc(metaName(r.meta_id) || "")}` : `${TIPOS[r.tipo].n} · ${esc(areaName(r.area))}${r.fecha ? " · " + esc(fmtDate(r.fecha)) : ""}${r.hora ? " · " + fmtTime(r.hora) : ""}`;
+      return `<div class="dump-item a-${areaKey(r.area)} ${saved ? "saved" : ""}" role="listitem">
+        ${saved ? `<span style="color:var(--color-success)">${ic("check")}</span>` : `<input type="checkbox" id="dump-${i}" data-dump="${i}" ${it.sel ? "checked" : ""} aria-label="Elegir: ${esc(r.titulo)}">`}
+        <label class="row-main" for="dump-${i}"><span class="row-title">${esc(r.titulo)}</span><span class="row-meta"><span>${ic(r.tipo === "checkin" ? "target" : TIPOS[r.tipo].ic, "icon-16")}${meta}</span><span>${ic("arrow","icon-16")}${destino(r)}</span>${it.missing.length && r.tipo !== "checkin" ? `<span class="soon">${ic("info","icon-16")}${esc(askFor(r, it.missing) || "")}</span>` : ""}</span></label>
+        ${saved ? `<span class="caption">${esc(cap1(r.tipo === "checkin" ? "anotado" : guardad(r.tipo)))}</span>` : `<button class="btn btn-text" data-act="dump-edit" data-i="${i}">${ic("pencil","icon-16")}Revisar</button>`}
+      </div>`; }).join("")}</div>
+    <div class="form-foot"><button class="btn btn-secondary" data-act="dump-clear">Empezar de nuevo</button><button class="btn btn-primary" data-act="dump-save" ${pend ? "" : "disabled"}>${ic("check")}${pend ? `Guardar ${pend === n ? "todo" : plural(pend, "seleccionado", "seleccionados")}` : "Todo guardado"}</button></div>
+  </section>`;
+}
 function viewCapturar(){
-  const c = S.cap, busy = c.phase === "loading", confirm = c.phase === "confirm", tab = S.capTab;
-  const tabs = `<div class="tabs" role="tablist" aria-label="Formas de capturar">
-    <button class="tab" role="tab" data-captab="una" aria-selected="${tab === "una"}">${ic("capture","icon-16")}Una cosa</button>
-    <button class="tab" role="tab" data-captab="mente" aria-selected="${tab === "mente"}">${ic("pen","icon-16")}Suelta tu mente</button></div>`;
-  const head = `<div class="page-head"><div><h1>Capturar</h1><p>${tab === "una" ? "Escríbeme como lo dirías en voz alta. Detecto el tipo, la fecha, la hora y la prioridad, y te pregunto lo que falte." : "Escribe todo lo que tienes en la cabeza, sin orden. Yo lo separo en pendientes y tú eliges qué guardar."}</p></div></div>`;
-  if (tab === "mente") { const q2 = puede("captura_ia"); return head + tabs + (!q2.ok ? `<div class="banner info" style="margin-bottom:var(--space-5)">${ic("info")}<div><b>Este mes ya usaste tus ${q2.limite} capturas con IA.</b> Puedo separar tu texto con una lectura básica, o puedes pasarte a Plus. <a href="#precios">Ver Plus</a></div></div>` : "") + viewDump(); }
+  const c = S.cap, busy = c.phase === "loading", confirm = c.phase === "confirm", multi = c.phase === "multi";
+  const head = `<div class="page-head"><div><h1>Capturar</h1><p>Escríbeme como lo dirías en voz alta: una cosa o todo lo que tienes en la cabeza. Yo separo las tareas, reuniones, eventos y notas, detecto fechas y prioridades, y te pregunto lo que falte.</p></div></div>`;
   let card = "";
   if (busy) card = `<div class="card confirm" aria-live="polite"><div class="confirm-head"><h2>Leyendo lo que escribiste…</h2><span class="ai-badge">${ic("capture","icon-16")}IA</span></div>${loadingRows()}</div>`;
   if (confirm) card = confirmCardHTML();
+  if (multi) card = multiListHTML();
   const q = puede("captura_ia"), ef = planEf();
   const help = (nivel() === 1 ? "Nada se guarda hasta que confirmes." : nivel() === 2 ? "Si lo tengo muy claro, lo guardo y te aviso. Lo dudoso te lo pregunto." : "Guardo lo que tenga claro y te aviso. Lo que falta te lo pregunto.")
     + (!ef.plus && q.ok ? ` Te ${q.limite - q.usadas === 1 ? "queda 1 captura" : `quedan ${q.limite - q.usadas} capturas`} con IA este mes.` : "");
   const limitBanner = !q.ok ? `<div class="banner info" style="margin-bottom:var(--space-5)">${ic("info")}<div><b>Este mes ya usaste tus ${q.limite} capturas con IA.</b> Puedes seguir escribiendo a mano o pasarte a Plus. Si escribes aquí, hago una lectura básica y tú revisas. <a href="#precios">Ver Plus</a></div></div>` : "";
-  return `${head}${tabs}${limitBanner}
+  return `${head}${limitBanner}
   <div class="cap-grid">
     <div>
       <form class="card cap-input" id="cap-form" novalidate>
-        <div class="field"><label for="cap-text">¿Qué necesitas organizar?</label>
-          <textarea class="textarea" id="cap-text" placeholder="Tengo reunión con el equipo el jueves a las 10 a. m. para revisar los avances del proyecto" ${busy ? "disabled" : ""}>${esc(c.text)}</textarea>
+        <div class="field"><label for="cap-text">¿Qué tienes en la cabeza?</label>
+          <textarea class="textarea" id="cap-text" placeholder="El viernes entrego el avance de tesis. Tengo que llamar al banco y comprar comida para los gatos. El martes a las 3 p. m. tengo reunión con el cliente." ${busy ? "disabled" : ""}>${esc(c.text)}</textarea>
           <span class="help" id="cap-help">${help}</span></div>
-        <div class="cap-actions"><button type="submit" class="btn ${confirm ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""} style="min-width:148px">${busy ? `<span class="spinner"></span>Interpretando…` : `${ic("capture")}${confirm ? "Volver a interpretar" : "Interpretar"}`}</button></div>
+        <div class="cap-actions"><button type="submit" class="btn ${confirm || multi ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""} style="min-width:148px">${busy ? `<span class="spinner"></span>Ordenando…` : `${ic("capture")}${confirm || multi ? "Volver a ordenar" : "Ordenar"}`}</button></div>
       </form>
       ${card}
     </div>
     <aside class="card" aria-labelledby="h-ex"><h3 id="h-ex" style="margin-bottom:12px">Ejemplos</h3>
       <div class="examples">${CAP_EX.map(x => `<button type="button" data-ex="${esc(x)}">${ic("arrow","icon-16")}<span>${esc(x)}</span></button>`).join("")}</div>
-      <p class="caption" style="margin-top:16px">No reviso tu correo ni tus chats. ${nivel() === 1 ? "Y no guardo nada sin que lo confirmes." : "Puedes cambiar cuánto hago por mi cuenta en tu perfil."}</p>
+      <p class="caption" style="margin-top:16px"><b>Tareas</b> son acciones que haces tú. <b>Agenda</b> son reuniones y eventos que ocurren en un momento. Las tareas con fecha también aparecen en tu agenda como fecha límite.</p>
+      <p class="caption" style="margin-top:8px">No reviso tu correo ni tus chats. ${nivel() === 1 ? "Y no guardo nada sin que lo confirmes." : "Puedes cambiar cuánto hago por mi cuenta en tu perfil."}</p>
     </aside>
   </div>`;
-}
-function viewDump(){
-  const d = S.dump, busy = d.phase === "loading";
-  const items = d.items;
-  const list = items.length ? `<div class="dump-list" role="list">${items.map((it, i) => {
-    const r = it.draft, saved = it.saved;
-    const meta = r.tipo === "checkin" ? `Cumplido hoy · ${esc(metaName(r.meta_id) || "")}` : `${TIPOS[r.tipo].n} · ${esc(areaName(r.area))}${r.fecha ? " · " + esc(fmtDate(r.fecha)) : ""}${r.hora ? " · " + fmtTime(r.hora) : ""}`;
-    return `<div class="dump-item a-${areaKey(r.area)} ${saved ? "saved" : ""}" role="listitem">
-      ${saved ? `<span style="color:var(--color-success)">${ic("check")}</span>` : `<input type="checkbox" id="dump-${i}" data-dump="${i}" ${it.sel ? "checked" : ""} aria-label="Elegir: ${esc(r.titulo)}">`}
-      <label class="row-main" for="dump-${i}"><span class="row-title">${esc(r.titulo)}</span><span class="row-meta"><span>${meta}</span>${it.missing.length && r.tipo !== "checkin" ? `<span class="soon">${ic("info","icon-16")}${esc(askFor(r, it.missing) || "")}</span>` : ""}</span></label>
-      ${saved ? `<span class="caption">${esc(cap1(guardad(r.tipo)))}</span>` : `<button class="btn btn-text" data-act="dump-edit" data-i="${i}">${ic("pencil","icon-16")}Revisar</button>`}
-    </div>`; }).join("")}</div>
-    <div class="form-foot"><button class="btn btn-secondary" data-act="dump-clear">Empezar de nuevo</button><button class="btn btn-primary" data-act="dump-save" ${items.some(x => x.sel && !x.saved) ? "" : "disabled"}>${ic("check")}Guardar seleccionados</button></div>` : "";
-  return `<form class="card dump" id="dump-form" novalidate>
-    <div class="field"><label for="dump-text">¿Qué tienes en la cabeza?</label>
-      <textarea class="textarea" id="dump-text" placeholder="El viernes entrego el avance de tesis, tengo que llamar al banco, comprar comida para los gatos, la reunión con el cliente es el martes a las 3 p. m. y quiero ir al gym 3 veces…" ${busy ? "disabled" : ""}>${esc(d.text)}</textarea>
-      <span class="help">No se guarda nada hasta que elijas qué guardar.</span></div>
-    <div class="cap-actions"><button type="submit" class="btn ${items.length ? "btn-secondary" : "btn-primary"}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span>Ordenando…` : `${ic("capture")}${items.length ? "Volver a ordenar" : "Ordenar"}`}</button></div>
-    ${busy ? `<div style="margin-top:20px">${loadingRows()}</div>` : list}
-  </form>`;
 }
 
 /* ================= agenda ================= */
