@@ -44,7 +44,7 @@ function viewToday(){
   const s = daySummary();
   return `<section class="card today" aria-labelledby="h-today">
     <div class="today-head"><div><span class="overline">Tu día</span><h2 id="h-today">${esc(dayHeadline(s))}</h2></div>
-      <button class="btn btn-secondary" data-act="copy-day">${ic("copy")}Copiar resumen</button></div>
+      <div class="row-inline"><a class="btn btn-secondary" href="${esc(waLink(waDayText()))}" target="_blank" rel="noopener">${ic("whatsapp")}Enviar por WhatsApp</a><button class="btn btn-text" data-act="copy-day">${ic("copy")}Copiar resumen</button></div></div>
     <div class="dcols">
       ${dayCol("Vence hoy", "flag", s.dueToday, "due", "Nada vence hoy.")}
       ${dayCol("Reuniones y eventos de hoy", "users", s.evs, "ev", "Sin reuniones ni eventos hoy.")}
@@ -53,6 +53,31 @@ function viewToday(){
     <p class="tomorrow caption">${ic("calendar", "icon-16")}Mañana: ${plural(s.tmTasks, "pendiente", "pendientes")} y ${plural(s.tmEvs, "reunión o evento", "reuniones o eventos")}.</p>
   </section>`;
 }
+/* ---------- compartir por WhatsApp ---------- */
+const waLink = texto => "https://wa.me/?text=" + encodeURIComponent(texto);
+const waLimpio = s => String(s || "").replace(/[*_~`]/g, "");
+const waFirma = () => "\n_Organizado con Arlet_" + (window.ARLET_WEB && location.origin.startsWith("https://") ? ` · ${location.host}` : "");
+function waDayText(){
+  const s = daySummary(), L = [`*Mi día · ${fmtDate(s.td)}*`, dayHeadline(s)];
+  const block = (t, arr, f) => { if (arr.length) { L.push("", `*${t}*`); arr.forEach(r => L.push("• " + f(r))); } };
+  block("Vence hoy", s.dueToday, r => `${waLimpio(r.titulo)}${r.prioridad === "alta" ? " (prioridad alta)" : ""}`);
+  block("Reuniones y eventos", s.evs, r => `${r.hora ? fmtTime(r.hora) + " · " : ""}${waLimpio(r.titulo)}`);
+  block("Pendientes atrasados", s.late, r => `${waLimpio(r.titulo)} (${lateTxt(r).toLowerCase()})`);
+  L.push("", `Mañana: ${plural(s.tmTasks, "pendiente", "pendientes")} y ${plural(s.tmEvs, "reunión o evento", "reuniones o eventos")}.`, waFirma());
+  return L.join("\n");
+}
+function waRecordText(r){
+  const L = [`*${waLimpio(r.titulo)}*`];
+  if (r.tipo === "nota") { if (r.descripcion) L.push(waLimpio(r.descripcion)); }
+  else {
+    const when = [r.fecha ? cap1(longDate(r.fecha)) : null, r.hora ? fmtTime(r.hora) : null].filter(Boolean).join(" · ");
+    L.push(`${TIPOS[r.tipo].n}${when ? " · " + when : ""}`);
+    if (r.descripcion) L.push(waLimpio(r.descripcion));
+  }
+  L.push(waFirma());
+  return L.join("\n");
+}
+function abrirEnlace(url){ const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; document.body.appendChild(a); a.click(); a.remove(); }
 function dayText(){
   const s = daySummary(), L = [`Resumen de hoy, ${fmtDate(s.td)}`, dayHeadline(s)];
   const block = (t, arr, f) => { if (arr.length) { L.push("", t); arr.forEach(r => L.push("• " + f(r))); } };

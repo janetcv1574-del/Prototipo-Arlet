@@ -77,6 +77,7 @@ function openMenu(btn, id){
     items.push(`<div class="sep"></div><span class="sub">Mover</span><button data-m="pp1">${ic("snooze")}Al día siguiente</button><button data-m="pp7">${ic("snooze")}Una semana después</button>`);
   }
   if (r.tipo !== "nota" && metas().length) items.push(`<button data-m="link">${ic("target")}Vincular a una meta</button>`);
+  items.push(`<button data-m="wa">${ic("whatsapp")}Compartir por WhatsApp</button>`);
   items.push(`<div class="sep"></div><button data-m="del" class="danger">${ic("trash")}Eliminar</button>`);
   placeMenu(btn, id, items);
 }
@@ -97,6 +98,7 @@ async function menuAction(id, act){
   if (r.k === "meta") return metaAction(r, act);
   if (act === "edit") return openEditor(r);
   if (act === "link") return openLink(r);
+  if (act === "wa") return abrirEnlace(waLink(waRecordText(r)));
   if (act === "del") return openConfirm({ title:`¿Eliminar ${TIPOS[r.tipo].art}?`, text:`"${r.titulo}" se eliminará y no podrás recuperarl${fem(r.tipo) ? "a" : "o"}.`, ok:"Eliminar",
     onOk: async () => { if (await del(r.id)) toast(say(`Listo, eliminé ${TIPOS[r.tipo].art}.`, "Eliminado."), "ok"); } });
   if (act === "done") return toggleDone(id);
