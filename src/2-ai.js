@@ -47,7 +47,7 @@ function recentCorrections(){
 /* ---------- intérprete básico de respaldo ---------- */
 function guessArea(t){
   const has = re => re.test(t);
-  if (has(/\b(tesis|universidad|curso|clases?|examen|profesor|asesora?|practica calificada|trabajo grupal|facultad|maestria|exposicion|monografia)\b/)) return "estudios";
+  if (has(/\b(la u|la uni|tesis|universidad|curso|clases?|examen|profesor|asesora?|practica calificada|trabajo grupal|facultad|maestria|exposicion|monografia)\b/)) return "estudios";
   if (has(/\b(gym|gimnasio|correr|entrenar|entrene|yoga|doctora?|medic[oa]|dentista|cita medica|pastillas?|nutricion|caminar|nadar|pilates)\b/)) return "salud";
   if (has(/\b(viaje|viajar|vuelo|pasajes?|hotel|maleta|pasaporte|visa|aeropuerto)\b/)) return "viajes";
   if (has(/\b(pagar|banco|tarjeta|ahorrar|ahorro|presupuesto|recibos?|impuestos?|sunat|deuda|prestamo)\b/)) return "finanzas";
@@ -157,6 +157,7 @@ const DRAFT_SPEC = `- "tipo": elige con estas reglas, en este orden:
   · "nota": una idea, apunte o reflexión sin acción concreta.
   · "checkin": cuenta que YA cumplió hoy un hábito de una de sus metas (ej. "hoy fui al gym").
   Si dudas entre tarea y evento, elige "tarea".
+  LISTAS: si escribe una lista con encabezado (ej. "tareas para hoy: limpiar casa, pasear al perro, ir a la u a las 3 p. m."), cada elemento de la lista es un elemento aparte y hereda la fecha del encabezado ("hoy"). Si el encabezado dice "tareas", "pendientes" o "por hacer", todos son "tarea", aunque alguno tenga hora.
 - "titulo": breve y claro, mayúscula inicial, sin fecha ni hora, máximo 60 caracteres. Reuniones: "Reunión con …" o "Reunión de …".
 - "descripcion": detalle útil (propósito, contexto) o "".
 - "fecha": "AAAA-MM-DD" o null. Resuelve fechas relativas desde hoy ("mañana", "pasado mañana", "la próxima semana" = lunes siguiente). Un día de la semana es su próxima ocurrencia después de hoy.
@@ -254,7 +255,40 @@ No incluyas datos de salud, sexualidad, religión, política ni finanzas persona
 /* ---------- suelta tu mente ---------- */
 /* Una sola captura para una cosa o veinte: la IA separa cada pendiente, reunión, evento o nota. */
 const SPLIT_RE = /\n+|(?<=[.;!?])\s+|,\s*(?:y\s+|además\s+|tambien\s+|también\s+)?(?=(?:tengo|debo|necesito|hay que|me toca|el |la |los |las |este |esta |mañana|hoy|pasado|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|comprar|llamar|pagar|enviar|mandar|ir |hacer|reuni|recordar|recuérdame|entregar|estudiar|terminar|preparar|nota))|\s+y\s+(?:además\s+|también\s+)?(?=(?:tengo que|debo|necesito|hay que|me toca|comprar|llamar|pagar|enviar|mandar|entregar|estudiar|terminar|preparar|recordar|reuni))/i;
-function splitLocal(text){ return text.split(SPLIT_RE).map(s => (s || "").trim().replace(/^(y|además|también)\s+/i, "")).filter(s => s.length > 3).slice(0, 15); }
+/* Listas: "tareas para hoy: a, b, c", viñetas o renglones, o varias cosas cortas separadas por comas. */
+function encabezado(text){
+  const m = text.match(/^\s*([^:\n]{2,50}):\s*([\s\S]+)$/);
+  if (!m) return null;
+  const h = norm(m[1]);
+  if (!/(tarea|pendiente|por hacer|to ?do|lista|hoy|manana|pasado|semana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|cosas|hacer)/.test(h)) return null;
+  return { texto:m[1].trim(), cuerpo:m[2], tareas:/(tarea|pendiente|por hacer|to ?do|cosas que hacer|hacer)/.test(h) };
+}
+function itemsDeLista(cuerpo){
+  const lineas = cuerpo.split(/\n+/).map(s => s.replace(/^\s*([-*•·]|\d+[.)])\s*/, "").trim()).filter(Boolean);
+  const partes = lineas.length > 1 ? lineas : cuerpo.split(/\s*[,;]\s*|\s+y\s+(?=[a-záéíóúñ]+\b)(?![^,]*,)/i);
+  return partes.map(s => s.trim().replace(/^(y|además|también)\s+/i, "").replace(/[.]+$/, "")).filter(s => s.length > 1);
+}
+function splitLocal(text){
+  const h = encabezado(text);
+  if (h) return itemsDeLista(h.cuerpo).slice(0, 15).map(s => s + " " + h.texto.replace(/\b(tareas?|pendientes?|por hacer|to ?do|lista|cosas|que|para|de|del)\b/gi, " ").replace(/\s+/g, " ").trim());
+  const lineas = text.split(/\n+/).map(s => s.replace(/^\s*([-*•·]|\d+[.)])\s*/, "").trim()).filter(Boolean);
+  if (lineas.length > 1) return lineas.slice(0, 15);
+  const comas = text.split(/\s*,\s*/);
+  if (comas.length >= 2 && comas.every(s => s.split(/\s+/).length <= 8)) return itemsDeLista(text).slice(0, 15);
+  return text.split(SPLIT_RE).map(s => (s || "").trim().replace(/^(y|además|también)\s+/i, "")).filter(s => s.length > 3).slice(0, 15);
+}
+/* Después de la IA: el encabezado manda. Si dice "tareas", nada se va como evento; si dice "hoy", la fecha se hereda. */
+function aplicarEncabezado(items, text){
+  const h = encabezado(text); if (!h) return items;
+  const fechaH = localParse(h.texto + " algo").draft.fecha;
+  return items.map(out => {
+    const d = out.draft;
+    if (h.tareas && d.tipo === "evento") d.tipo = "tarea";
+    if (fechaH && !d.fecha && d.tipo !== "nota" && d.tipo !== "checkin") d.fecha = fechaH;
+    const f = finishDraft(d); out.missing = f.missing; out.question = f.missing.length ? askFor(d, f.missing) : null;
+    return out;
+  });
+}
 async function interpretAll(text, ia = true){
   const prompt = `Eres Arlet, la mano derecha de una persona joven en Perú que organiza trabajo, estudios y vida personal. ${dateCtx()}
 Lo que sabes de ella:
@@ -267,10 +301,10 @@ Texto de la usuaria: """${text}"""`;
   const arr = out && Array.isArray(out.items) ? out.items : Array.isArray(out) ? out : out && out.tipo ? [out] : null;
   if (arr) {
     const items = arr.map(sanitizeDraft).filter(Boolean).map(x => corregirTipo(applyPatterns({ ...x, source:"ia" }, x.draft.titulo)));
-    if (items.length) return items;
+    if (items.length) return aplicarEncabezado(items, text);
   }
   const partes = splitLocal(text);
-  return (partes.length ? partes : [text]).map(s => { const l = localParse(s); return corregirTipo(applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s)); });
+  return aplicarEncabezado((partes.length ? partes : [text]).map(s => { const l = localParse(s); return corregirTipo(applyPatterns({ ...l, question:askFor(l.draft, l.missing), source:"basica", conf:0.4 }, s)); }), text);
 }
 
 /* ---------- diario: cuidado primero ---------- */
