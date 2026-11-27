@@ -1,0 +1,12 @@
+{
+  "name": "arlet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "sh build.sh && sh build-web.sh",
+    "test": "node --test tests/*.test.*"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0"
+  }
+}
